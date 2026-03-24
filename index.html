@@ -216,7 +216,7 @@
 
     <div class="panel" id="outputPanel">
       <div class="panel-header">
-        <span>Translation</span>
+        <span id="outputTitle">Translation</span>
         <div class="panel-header-actions">
           <button class="icon-btn" id="copyBtn" title="Copy">⧉</button>
           <button class="icon-btn" id="speakBtn" title="Read aloud">▶</button>
@@ -253,6 +253,11 @@
       <input type="checkbox" id="continuousToggle">
       <div class="toggle-track"></div>
       Continuous listening
+    </label>
+    <label class="toggle-label">
+      <input type="checkbox" id="autoGrammarToggle">
+      <div class="toggle-track"></div>
+      Auto grammar correction
     </label>
   </div>
 
@@ -307,6 +312,7 @@ const srcLang = document.getElementById('srcLang');
 const tgtLang = document.getElementById('tgtLang');
 const inputText = document.getElementById('inputText');
 const outputArea = document.getElementById('outputArea');
+const outputTitle = document.getElementById('outputTitle');
 const translateBtn = document.getElementById('translateBtn');
 const charCount = document.getElementById('charCount');
 const statusBox = document.getElementById('statusBox');
@@ -325,6 +331,7 @@ const interimText = document.getElementById('interimText');
 const stopBannerBtn = document.getElementById('stopBannerBtn');
 const autoSpeakToggle = document.getElementById('autoSpeakToggle');
 const continuousToggle = document.getElementById('continuousToggle');
+const autoGrammarToggle = document.getElementById('autoGrammarToggle');
 const inputPanel = document.getElementById('inputPanel');
 
 // Populate selects
@@ -348,9 +355,16 @@ function updateCharCount() {
   translateBtn.disabled = len === 0;
   if (len === 0) {
     outputArea.innerHTML = '<span class="output-placeholder">Translation appears here…</span>';
+    outputTitle.textContent = 'Translation';
     setStatus('', 'Ready');
     confBox.style.display = 'none';
   }
+}
+
+function clearSourceAfterProcessing() {
+  inputText.value = '';
+  charCount.textContent = '0 / 5000';
+  translateBtn.disabled = true;
 }
 
 // ─── Speech Recognition ───
@@ -358,6 +372,8 @@ const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecogni
 let recognition = null;
 let isListening = false;
 let wasVoice = false;
+let currentMode = 'translate';
+let stopRequested = false;
 
 if (!SpeechRecognition) {
   [micBtn, bigMicBtn].forEach(b => { b.disabled = true; b.title = 'Use Chrome or Edge for voice input'; });
@@ -372,6 +388,7 @@ if (!SpeechRecognition) {
   recognition.maxAlternatives = 1;
 
   recognition.onstart = () => {
+    stopRequested = false;
     isListening = true;
     wasVoice = true;
     micBtn.classList.add('recording');
@@ -415,6 +432,7 @@ if (!SpeechRecognition) {
     interimText.textContent = interim || final || '…';
 
     if (final) {
+      stopRequested = false;
       const cur = inputText.value.trim();
       inputText.value = (cur ? cur + ' ' : '') + final.trim();
       updateCharCount();
@@ -423,8 +441,10 @@ if (!SpeechRecognition) {
       if (!continuousToggle.checked) recognition.stop();
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(async () => {
-        await translate();
-        if (autoSpeakToggle.checked) speakOutput();
+        const shouldSpeakAfterVoice = autoSpeakToggle.checked;
+        await translate({ shouldSpeak: shouldSpeakAfterVoice && !autoGrammarToggle.checked });
+        await runAutoGrammarIfEnabled({ shouldSpeak: shouldSpeakAfterVoice });
+        if (!stopRequested) clearSourceAfterProcessing();
       }, 300);
     }
   };
@@ -433,6 +453,7 @@ if (!SpeechRecognition) {
 function toggleListening() {
   if (!recognition) return;
   if (isListening) { recognition.stop(); return; }
+  stopRequested = false;
   recognition.lang = SPEECH_LANG[srcLang.value] || 'en-US';
   recognition.continuous = continuousToggle.checked;
   recognition.start();
@@ -440,29 +461,54 @@ function toggleListening() {
 
 micBtn.addEventListener('click', toggleListening);
 bigMicBtn.addEventListener('click', toggleListening);
-stopBannerBtn.addEventListener('click', () => { if (recognition && isListening) recognition.stop(); });
+stopBannerBtn.addEventListener('click', () => {
+  stopRequested = true;
+  clearTimeout(debounceTimer);
+  window.speechSynthesis.cancel();
+  speakBtn.classList.remove('speaking');
+  if (recognition && isListening) recognition.stop();
+  interimText.textContent = 'Stopped';
+  setStatus('', 'Stopped');
+});
 
 // ─── Text input ───
 let debounceTimer;
 inputText.addEventListener('input', () => {
+  stopRequested = false;
   updateCharCount();
   clearTimeout(debounceTimer);
+  window.speechSynthesis.cancel();
+  speakBtn.classList.remove('speaking');
   if (inputText.value.trim().length > 0) {
     wasVoice = false;
-    debounceTimer = setTimeout(translate, 900);
+    debounceTimer = setTimeout(async () => {
+      await translate({ shouldSpeak: false });
+      await runAutoGrammarIfEnabled({ shouldSpeak: false });
+    }, 900);
   }
 });
 
 inputText.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) translate();
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    stopRequested = false;
+    translate({ shouldSpeak: autoSpeakToggle.checked });
+  }
 });
 
-translateBtn.addEventListener('click', translate);
+translateBtn.addEventListener('click', () => {
+  stopRequested = false;
+  translate();
+});
 
 clearBtn.addEventListener('click', () => {
+  stopRequested = true;
+  clearTimeout(debounceTimer);
+  window.speechSynthesis.cancel();
+  speakBtn.classList.remove('speaking');
   inputText.value = '';
   updateCharCount();
   outputArea.innerHTML = '<span class="output-placeholder">Translation appears here…</span>';
+  outputTitle.textContent = 'Translation';
   setStatus('', 'Ready');
   confBox.style.display = 'none';
 });
@@ -479,6 +525,7 @@ copyBtn.addEventListener('click', () => {
 });
 
 function speakOutput() {
+  stopRequested = false;
   const text = outputArea.textContent;
   if (!text || text.includes('Translation appears here')) return;
   window.speechSynthesis.cancel();
@@ -490,6 +537,15 @@ function speakOutput() {
 }
 
 speakBtn.addEventListener('click', speakOutput);
+autoSpeakToggle.addEventListener('change', () => {
+  if (!autoSpeakToggle.checked) {
+    stopRequested = true;
+    window.speechSynthesis.cancel();
+    speakBtn.classList.remove('speaking');
+  } else {
+    stopRequested = false;
+  }
+});
 
 // ─── Swap ───
 document.getElementById('swapBtn').addEventListener('click', () => {
@@ -499,7 +555,7 @@ document.getElementById('swapBtn').addEventListener('click', () => {
   const ph = cur.includes('Translation appears here');
   tgtLang.value = sv;
   if ([...srcLang.options].some(o => o.value === tv)) srcLang.value = tv;
-  if (!ph) { inputText.value = cur; updateCharCount(); translate(); }
+  if (!ph) { inputText.value = cur; updateCharCount(); translate({ shouldSpeak: false }); }
 });
 
 // ─── History ───
@@ -523,19 +579,108 @@ function renderHistory() {
       <div class="h-arrow">▸</div>
       <div class="h-tgt">${h.tgt.substring(0,38)}${h.tgt.length>38?'…':''}</div>`;
     item.addEventListener('click', () => {
+      stopRequested = false;
       inputText.value = h.src;
       updateCharCount();
       translateBtn.disabled = false;
-      translate();
+      translate({ shouldSpeak: false });
     });
     historyList.appendChild(item);
   });
 }
 
-// ─── Translate ───
-async function translate() {
+function getGrammarLanguage() {
+  if (srcLang.value && srcLang.value !== 'auto') return srcLang.value;
+  if (tgtLang.value) return tgtLang.value;
+  return 'en-US';
+}
+
+async function runAutoGrammarIfEnabled({ shouldSpeak = false } = {}) {
+  if (!autoGrammarToggle.checked) return;
+  await correctGrammar({ isAuto: true, shouldSpeak });
+}
+
+function renderGrammarResult(original, corrected, matches, isAuto) {
+  const suggestions = (matches || []).slice(0, 6).map(match => {
+    const replacement = (match.replacements || []).length ? match.replacements[0].value : 'Review';
+    return `• ${match.message} -> ${replacement}`;
+  }).join('\n');
+
+  outputTitle.textContent = 'Corrected Text';
+  outputArea.textContent = corrected;
+  confBox.style.display = 'flex';
+  confFill.style.width = `${Math.max(70, Math.min(100, 100 - matches.length * 6))}%`;
+  confLabel.textContent = `${matches.length} issue${matches.length === 1 ? '' : 's'} found`;
+  setStatus('success', corrected === original ? 'Already looks good' : (isAuto ? 'Grammar auto-corrected' : 'Grammar corrected'));
+
+  if (suggestions) {
+    const tips = document.createElement('div');
+    tips.style.marginTop = '14px';
+    tips.style.paddingTop = '12px';
+    tips.style.borderTop = '1px solid var(--border)';
+    tips.style.whiteSpace = 'pre-wrap';
+    tips.style.fontFamily = "'DM Mono', monospace";
+    tips.style.fontSize = '0.72rem';
+    tips.style.color = 'var(--muted)';
+    tips.textContent = suggestions;
+    outputArea.appendChild(tips);
+  }
+}
+
+async function correctGrammar(options = {}) {
+  const { isAuto = false, shouldSpeak = false } = options;
   const text = inputText.value.trim();
   if (!text) return;
+
+  currentMode = 'grammar';
+  outputTitle.textContent = 'Corrected Text';
+  setStatus('loading', isAuto ? 'Auto-correcting grammar...' : 'Checking grammar...');
+  translateBtn.disabled = true;
+  confBox.style.display = 'none';
+
+  try {
+    const body = new URLSearchParams({
+      text,
+      language: getGrammarLanguage()
+    });
+    const res = await fetch('https://api.languagetool.org/v2/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString()
+    });
+    if (!res.ok) throw new Error('Grammar service unavailable');
+    const data = await res.json();
+    const matches = Array.isArray(data.matches) ? [...data.matches].sort((a, b) => a.offset - b.offset) : [];
+
+    let corrected = text;
+    let shift = 0;
+    matches.forEach(match => {
+      const replacement = (match.replacements || [])[0]?.value;
+      if (!replacement) return;
+      const start = match.offset + shift;
+      const end = start + match.length;
+      corrected = corrected.slice(0, start) + replacement + corrected.slice(end);
+      shift += replacement.length - match.length;
+    });
+
+    renderGrammarResult(text, corrected, matches, isAuto);
+    addHistory(text, corrected, false);
+    if (!stopRequested && shouldSpeak && corrected.trim()) speakOutput();
+  } catch (err) {
+    setStatus('error', err.message || 'Grammar check failed');
+    outputArea.innerHTML = `<span style="color:var(--danger);font-family:'DM Mono',monospace;font-size:0.83rem;">⚠ ${err.message}</span>`;
+  } finally {
+    translateBtn.disabled = inputText.value.length === 0;
+  }
+}
+
+// ─── Translate ───
+async function translate(options = {}) {
+  const { shouldSpeak = autoSpeakToggle.checked } = options;
+  const text = inputText.value.trim();
+  if (!text) return;
+  currentMode = 'translate';
+  outputTitle.textContent = 'Translation';
   const src = srcLang.value, tgt = tgtLang.value;
   if (src === tgt && src !== 'auto') { outputArea.textContent = text; setStatus('', 'Same language'); return; }
 
@@ -561,7 +706,7 @@ async function translate() {
       confLabel.textContent = pct + '%';
       addHistory(text, translated, wasVoice);
       wasVoice = false;
-      if (autoSpeakToggle.checked) speakOutput();
+      if (!stopRequested && shouldSpeak) speakOutput();
     } else {
       throw new Error(data.responseDetails || 'Translation failed');
     }
