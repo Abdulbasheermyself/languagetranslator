@@ -245,6 +245,11 @@
   <!-- Options -->
   <div class="options-row">
     <label class="toggle-label">
+      <input type="checkbox" id="autoTranslateToggle">
+      <div class="toggle-track"></div>
+      Auto translate
+    </label>
+    <label class="toggle-label">
       <input type="checkbox" id="autoSpeakToggle" checked>
       <div class="toggle-track"></div>
       Auto-speak translation
@@ -329,6 +334,7 @@ const bigMicBtn = document.getElementById('bigMicBtn');
 const speechBanner = document.getElementById('speechBanner');
 const interimText = document.getElementById('interimText');
 const stopBannerBtn = document.getElementById('stopBannerBtn');
+const autoTranslateToggle = document.getElementById('autoTranslateToggle');
 const autoSpeakToggle = document.getElementById('autoSpeakToggle');
 const continuousToggle = document.getElementById('continuousToggle');
 const autoGrammarToggle = document.getElementById('autoGrammarToggle');
@@ -365,6 +371,10 @@ function clearSourceAfterProcessing() {
   inputText.value = '';
   charCount.textContent = '0 / 5000';
   translateBtn.disabled = true;
+}
+
+function isAutoTranslateEnabled() {
+  return autoTranslateToggle.checked;
 }
 
 // ─── Speech Recognition ───
@@ -437,15 +447,20 @@ if (!SpeechRecognition) {
       inputText.value = (cur ? cur + ' ' : '') + final.trim();
       updateCharCount();
       translateBtn.disabled = false;
-      interimText.textContent = 'Processing…';
       if (!continuousToggle.checked) recognition.stop();
       clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(async () => {
-        const shouldSpeakAfterVoice = autoSpeakToggle.checked;
-        await translate({ shouldSpeak: shouldSpeakAfterVoice && !autoGrammarToggle.checked });
-        await runAutoGrammarIfEnabled({ shouldSpeak: shouldSpeakAfterVoice });
-        if (!stopRequested) clearSourceAfterProcessing();
-      }, 300);
+      if (isAutoTranslateEnabled()) {
+        interimText.textContent = 'Processing…';
+        debounceTimer = setTimeout(async () => {
+          const shouldSpeakAfterVoice = autoSpeakToggle.checked;
+          await translate({ shouldSpeak: shouldSpeakAfterVoice && !autoGrammarToggle.checked });
+          await runAutoGrammarIfEnabled({ shouldSpeak: shouldSpeakAfterVoice });
+          if (!stopRequested) clearSourceAfterProcessing();
+        }, 300);
+      } else {
+        interimText.textContent = 'Captured. Press Translate';
+        setStatus('', 'Captured. Press Translate');
+      }
     }
   };
 }
@@ -481,23 +496,27 @@ inputText.addEventListener('input', () => {
   speakBtn.classList.remove('speaking');
   if (inputText.value.trim().length > 0) {
     wasVoice = false;
-    debounceTimer = setTimeout(async () => {
-      await translate({ shouldSpeak: false });
-      await runAutoGrammarIfEnabled({ shouldSpeak: false });
-    }, 900);
+    if (isAutoTranslateEnabled()) {
+      debounceTimer = setTimeout(async () => {
+        await translate({ shouldSpeak: false });
+        await runAutoGrammarIfEnabled({ shouldSpeak: false });
+      }, 900);
+    } else {
+      setStatus('', 'Ready to translate');
+    }
   }
 });
 
 inputText.addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
     stopRequested = false;
-    translate({ shouldSpeak: autoSpeakToggle.checked });
+    translate({ shouldSpeak: autoSpeakToggle.checked }).then(() => runAutoGrammarIfEnabled({ shouldSpeak: autoSpeakToggle.checked }));
   }
 });
 
 translateBtn.addEventListener('click', () => {
   stopRequested = false;
-  translate();
+  translate({ shouldSpeak: autoSpeakToggle.checked }).then(() => runAutoGrammarIfEnabled({ shouldSpeak: autoSpeakToggle.checked }));
 });
 
 clearBtn.addEventListener('click', () => {
@@ -544,6 +563,18 @@ autoSpeakToggle.addEventListener('change', () => {
     speakBtn.classList.remove('speaking');
   } else {
     stopRequested = false;
+  }
+});
+autoTranslateToggle.addEventListener('change', () => {
+  clearTimeout(debounceTimer);
+  stopRequested = false;
+  if (isAutoTranslateEnabled()) {
+    setStatus('', 'Auto translate enabled');
+    if (inputText.value.trim()) {
+      translate({ shouldSpeak: false }).then(() => runAutoGrammarIfEnabled({ shouldSpeak: false }));
+    }
+  } else {
+    setStatus('', inputText.value.trim() ? 'Manual mode. Press Translate' : 'Manual mode');
   }
 });
 
@@ -719,7 +750,7 @@ async function translate(options = {}) {
 }
 
 populateSelects();
-setStatus('', 'Ready');
+setStatus('', 'Manual mode');
 </script>
 </body>
 </html>
